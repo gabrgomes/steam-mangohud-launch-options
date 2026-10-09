@@ -1,0 +1,13 @@
+[Unit]
+Description=Auto-apply the MangoHud launch-options wrapper to installed Steam games
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/steam-mangohud-launch-options
+ExecStart=%h/dev/steam-mangohud-launch-options/venv/bin/python3 %h/dev/steam-mangohud-launch-options/mangohud_autoconfig.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
