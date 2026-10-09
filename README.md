@@ -43,6 +43,7 @@ installed game is already up to date.
 
 ## Setup
 
-`STEAM_ROOT`, `VDF_PATH` and `LIBRARY_FOLDERS` at the top of `add_mangohud.py`
-are hardcoded to this machine's Steam install and library locations — update
-them if either changes.
+Nothing to configure — the Steam install location, your account's
+numeric Steam3 ID, and your library folders are all auto-detected at
+runtime (`find_steam_root()`, `find_vdf_path()`, `find_library_folders()`
+in `add_mangohud.py`), nothing machine- or account-specific is hardcoded.

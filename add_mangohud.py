@@ -21,24 +21,25 @@ The wrapper also carries two things that don't work as plain `mangohud`:
     /usr/lib/mangohud path and the log output dir into Proton's sandbox,
     which doesn't see non-standard host lib paths otherwise.
 
+Everything machine/account-specific (the Steam install location, your
+numeric Steam3 account ID, your library folders) is auto-detected rather
+than hardcoded, so nothing personally identifying needs to live in this
+file - see find_steam_root()/find_vdf_path()/find_library_folders().
+
 Run this after installing new games. Steam must be fully closed first -
 it holds localconfig.vdf open and will overwrite our edit otherwise.
+(Or just leave steam-mangohud-autoconfig.service running - see README.md -
+and never run this by hand at all.)
 """
 import glob
+import os
 import re
 import subprocess
 import sys
 
 import vdf
 
-STEAM_ROOT = "/home/gabriel/.steam/debian-installation"
-VDF_PATH = f"{STEAM_ROOT}/userdata/118970669/config/localconfig.vdf"
-LIBRARY_FOLDERS = [
-    f"{STEAM_ROOT}/steamapps",
-    "/media/data/SteamLibrary/steamapps",
-]
-
-MANGOHUD_LOG_DIR = "/home/gabriel/.local/share/mangohud_logs"
+MANGOHUD_LOG_DIR = os.path.expanduser("~/.local/share/mangohud_logs")
 MANGOHUD_CONFIG = (
     f"output_folder={MANGOHUD_LOG_DIR},autostart_log=1,log_duration=999999,"
     "log_interval=200,fps_only,font_size=10,hud_no_margin,background_alpha=0,"
@@ -62,9 +63,63 @@ def steam_is_running():
     return bool(out.stdout.strip())
 
 
-def installed_appids():
+def find_steam_root():
+    """The active Steam client install directory. `~/.steam/root` is a
+    symlink Steam itself maintains to point at whichever install is
+    actually in use (native "debian-installation", plain "steam", ...), so
+    preferring it means never having to hardcode which one this machine
+    has. Falls back to the common fixed locations (including Flatpak's) for
+    a setup where that symlink is missing."""
+    root_link = os.path.expanduser("~/.steam/root")
+    if os.path.islink(root_link):
+        resolved = os.path.realpath(root_link)
+        if os.path.isdir(resolved):
+            return resolved
+    for candidate in (
+        "~/.steam/steam",
+        "~/.local/share/Steam",
+        "~/.var/app/com.valvesoftware.Steam/.local/share/Steam",
+    ):
+        path = os.path.expanduser(candidate)
+        if os.path.isdir(os.path.join(path, "userdata")):
+            return path
+    return None
+
+
+def find_vdf_path(steam_root):
+    """This account's localconfig.vdf, found rather than hardcoding the
+    numeric Steam3 ID in userdata/<id>/config/ - that ID isn't secret, but
+    there's no reason to bake one specific person's account ID into a
+    script other people might reuse. If userdata holds more than one
+    account (a shared machine), picks whichever was written to most
+    recently - the one actually in use."""
+    candidates = glob.glob(os.path.join(steam_root, "userdata", "*", "config", "localconfig.vdf"))
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getmtime)
+
+
+def find_library_folders(steam_root):
+    """Every Steam library's steamapps folder (the default one under
+    steam_root, plus any additional drives), read from Steam's own
+    libraryfolders.vdf instead of hardcoding drive paths that'll go stale
+    the moment a library is added, removed, or moved."""
+    vdf_path = os.path.join(steam_root, "steamapps", "libraryfolders.vdf")
+    try:
+        data = vdf.load(open(vdf_path))
+    except (OSError, SyntaxError):
+        return [os.path.join(steam_root, "steamapps")]
+    folders = [
+        os.path.join(entry["path"], "steamapps")
+        for entry in data.get("libraryfolders", {}).values()
+        if isinstance(entry, dict) and entry.get("path")
+    ]
+    return folders or [os.path.join(steam_root, "steamapps")]
+
+
+def installed_appids(library_folders):
     ids = set()
-    for folder in LIBRARY_FOLDERS:
+    for folder in library_folders:
         for path in glob.glob(f"{folder}/appmanifest_*.acf"):
             m = re.search(r"appmanifest_(\d+)\.acf", path)
             if m:
@@ -78,12 +133,25 @@ def main():
               "overwrite this file otherwise). Aborting.")
         return 1
 
-    appids = installed_appids()
-    if not appids:
-        print("No installed games found - check LIBRARY_FOLDERS in this script.")
+    steam_root = find_steam_root()
+    if not steam_root:
+        print("Couldn't find a Steam installation (no ~/.steam/root and none of the "
+              "usual locations have a userdata folder).")
         return 1
 
-    data = vdf.load(open(VDF_PATH))
+    vdf_path = find_vdf_path(steam_root)
+    if not vdf_path:
+        print(f"No userdata/<id>/config/localconfig.vdf under {steam_root} - "
+              "log into Steam at least once first.")
+        return 1
+
+    library_folders = find_library_folders(steam_root)
+    appids = installed_appids(library_folders)
+    if not appids:
+        print(f"No installed games found in {library_folders}.")
+        return 1
+
+    data = vdf.load(open(vdf_path))
     apps = data["UserLocalConfigStore"]["Software"]["Valve"]["Steam"]["apps"]
 
     changed = []
@@ -116,7 +184,7 @@ def main():
         print("Nothing to do - all installed games already have mangohud set.")
         return 0
 
-    vdf.dump(data, open(VDF_PATH, "w"), pretty=True)
+    vdf.dump(data, open(vdf_path, "w"), pretty=True)
     print(f"Updated {len(changed)} app(s):")
     for appid, opts in changed:
         print(f"  {appid}: {opts}")
